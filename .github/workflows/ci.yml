@@ -24,6 +24,8 @@ permissions:
   security-events: write
   actions: read
   packages: write
+  checks: write
+  pull-requests: write
 
 # Environment variables used across jobs
 env:
