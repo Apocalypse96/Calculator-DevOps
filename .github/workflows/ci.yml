@@ -410,9 +410,10 @@ jobs:
 
       - name: Test validation error handling
         run: |
-          status_code=$(curl -sf -o /dev/null -w "%{http_code}" -X POST http://localhost:8080/calculate \
+          status_code=$(curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:8080/calculate \
             -H "Content-Type: application/json" \
             -d '{}')
+          echo "Got status code: $status_code"
           if [[ "$status_code" != "400" ]]; then
             echo "ERROR: Validation should return 400, got $status_code"
             exit 1
