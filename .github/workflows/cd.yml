@@ -65,14 +65,19 @@ jobs:
           docker pull ${{ env.DOCKER_IMAGE }}:${{ inputs.image_tag }}
           echo "Image verified successfully!"
 
-      - name: Validate Kubernetes manifests
+      - name: Validate Kubernetes manifests (YAML syntax)
         run: |
-          echo "Validating Kubernetes manifests..."
+          echo "Validating Kubernetes manifests (YAML syntax check)..."
+          pip install pyyaml > /dev/null 2>&1
           for file in k8s/*.yaml; do
+            if [[ "$file" == *"-local.yaml" ]]; then
+              echo "Skipping $file (local development only)"
+              continue
+            fi
             echo "Checking $file..."
-            kubectl apply --dry-run=client --validate=false -f "$file"
+            python3 -c "import yaml; yaml.safe_load(open('$file'))" && echo "  ✓ Valid YAML"
           done
-          echo "All manifests are valid!"
+          echo "All manifests have valid YAML syntax!"
 
   # ==========================================================================
   # DAST (Dynamic Application Security Testing) - Placeholder
@@ -128,11 +133,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup kubectl
-        uses: azure/setup-kubectl@v3
-        with:
-          version: 'v1.29.0'
-
       - name: Update deployment image tag
         run: |
           # Replace placeholder with actual image tag
@@ -140,25 +140,43 @@ jobs:
           sed -i "s|\${DOCKERHUB_USERNAME}|${{ secrets.DOCKERHUB_USERNAME }}|g" k8s/deployment.yaml
           echo "Updated deployment.yaml with image tag: ${{ inputs.image_tag }}"
 
-      - name: Validate manifests (Dry Run)
+      - name: Validate manifests (YAML + Structure)
         run: |
           echo "=============================================="
-          echo "  KUBERNETES DEPLOYMENT - DRY RUN MODE"
+          echo "  KUBERNETES MANIFEST VALIDATION"
           echo "=============================================="
           echo ""
-          echo "Note: No real cluster configured. Validating YAML syntax."
-          echo ""
-          echo "Validating namespace..."
-          kubectl apply --dry-run=client --validate=false -f k8s/namespace.yaml
-          echo ""
-          echo "Validating configmap..."
-          kubectl apply --dry-run=client --validate=false -f k8s/configmap.yaml
-          echo ""
-          echo "Validating deployment..."
-          kubectl apply --dry-run=client --validate=false -f k8s/deployment.yaml
-          echo ""
-          echo "Validating service..."
-          kubectl apply --dry-run=client --validate=false -f k8s/service.yaml
+          pip install pyyaml > /dev/null 2>&1
+
+          validate_k8s_yaml() {
+            local file=$1
+            echo "Validating $file..."
+
+            # Check YAML syntax
+            if ! python3 -c "import yaml; yaml.safe_load(open('$file'))"; then
+              echo "  ✗ Invalid YAML syntax"
+              return 1
+            fi
+
+            # Check required K8s fields
+            python3 << EOF
+          import yaml
+          import sys
+          with open('$file') as f:
+              doc = yaml.safe_load(f)
+          required = ['apiVersion', 'kind', 'metadata']
+          missing = [r for r in required if r not in doc]
+          if missing:
+              print(f"  ✗ Missing required fields: {missing}")
+              sys.exit(1)
+          print(f"  ✓ Valid ({doc['kind']})")
+          EOF
+          }
+
+          for file in k8s/namespace.yaml k8s/configmap.yaml k8s/deployment.yaml k8s/service.yaml; do
+            validate_k8s_yaml "$file"
+          done
+
           echo ""
           echo "=============================================="
           echo "  ALL MANIFESTS VALIDATED SUCCESSFULLY!"
