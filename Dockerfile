@@ -32,11 +32,11 @@ RUN java -Djarmode=layertools -jar target/calculator.jar extract --destination t
 # Stage 2: Runtime Stage
 # Purpose: Minimal production image with only runtime dependencies
 # =============================================================================
-FROM eclipse-temurin:17-jre-alpine AS runtime
+FROM eclipse-temurin:17-jre-jammy AS runtime
 
 # Security: Create non-root user and group
-RUN addgroup -g 1001 appgroup && \
-    adduser -u 1001 -G appgroup -s /bin/sh -D appuser
+RUN groupadd -g 1001 appgroup && \
+    useradd -u 1001 -g appgroup -s /bin/bash -m appuser
 
 # Set working directory
 WORKDIR /app
@@ -54,9 +54,9 @@ USER appuser
 # Expose only the required port
 EXPOSE 8080
 
-# Health check using wget (available in alpine)
+# Health check using curl (available in jammy)
 HEALTHCHECK --interval=30s --timeout=3s --start-period=30s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/actuator/health || exit 1
+    CMD curl -sf http://localhost:8080/actuator/health || exit 1
 
 # JVM optimization flags for containers
 # - MaxRAMPercentage: Use 75% of available memory

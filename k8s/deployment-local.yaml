@@ -1,0 +1,93 @@
+# =============================================================================
+# Local Kubernetes Deployment (for Minikube testing)
+# =============================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: calculator
+  namespace: calculator
+  labels:
+    app: calculator
+    version: v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: calculator
+  template:
+    metadata:
+      labels:
+        app: calculator
+        version: v1
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+
+      containers:
+        - name: calculator
+          image: spring-calculator:local
+          imagePullPolicy: Never
+
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+
+          envFrom:
+            - configMapRef:
+                name: calculator-config
+
+          resources:
+            requests:
+              memory: "256Mi"
+              cpu: "250m"
+            limits:
+              memory: "512Mi"
+              cpu: "500m"
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          startupProbe:
+            httpGet:
+              path: /actuator/health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 30
+
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+
+      volumes:
+        - name: tmp
+          emptyDir: {}
+
+      terminationGracePeriodSeconds: 30

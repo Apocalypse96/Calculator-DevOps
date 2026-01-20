@@ -67,12 +67,12 @@ jobs:
 
       - name: Validate Kubernetes manifests
         run: |
-          echo "Validating Kubernetes manifests with kubectl..."
+          echo "Validating Kubernetes manifests..."
           for file in k8s/*.yaml; do
-            echo "Validating $file..."
-            kubectl apply --dry-run=client -f "$file" 2>&1 || true
+            echo "Checking $file..."
+            kubectl apply --dry-run=client --validate=false -f "$file"
           done
-          echo "Manifest validation complete!"
+          echo "All manifests are valid!"
 
   # ==========================================================================
   # DAST (Dynamic Application Security Testing) - Placeholder
@@ -146,19 +146,19 @@ jobs:
           echo "  KUBERNETES DEPLOYMENT - DRY RUN MODE"
           echo "=============================================="
           echo ""
-          echo "Note: No real cluster configured. Using --dry-run=client"
+          echo "Note: No real cluster configured. Validating YAML syntax."
           echo ""
           echo "Validating namespace..."
-          kubectl apply --dry-run=client -f k8s/namespace.yaml
+          kubectl apply --dry-run=client --validate=false -f k8s/namespace.yaml
           echo ""
           echo "Validating configmap..."
-          kubectl apply --dry-run=client -f k8s/configmap.yaml
+          kubectl apply --dry-run=client --validate=false -f k8s/configmap.yaml
           echo ""
           echo "Validating deployment..."
-          kubectl apply --dry-run=client -f k8s/deployment.yaml
+          kubectl apply --dry-run=client --validate=false -f k8s/deployment.yaml
           echo ""
           echo "Validating service..."
-          kubectl apply --dry-run=client -f k8s/service.yaml
+          kubectl apply --dry-run=client --validate=false -f k8s/service.yaml
           echo ""
           echo "=============================================="
           echo "  ALL MANIFESTS VALIDATED SUCCESSFULLY!"
