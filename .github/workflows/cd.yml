@@ -119,7 +119,7 @@ jobs:
   # Purpose: Deploy the application to the target Kubernetes cluster
   # ==========================================================================
   deploy:
-    name: "Deploy to Kubernetes"
+    name: "Deploy to Kubernetes (Dry Run)"
     needs: [validate, dast]
     if: always() && needs.validate.result == 'success' && (needs.dast.result == 'success' || needs.dast.result == 'skipped')
     runs-on: ubuntu-latest
@@ -133,152 +133,73 @@ jobs:
         with:
           version: 'v1.29.0'
 
-      - name: Configure kubeconfig
-        run: |
-          mkdir -p $HOME/.kube
-          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > $HOME/.kube/config
-          chmod 600 $HOME/.kube/config
-
-      - name: Create namespace (if not exists)
-        run: |
-          kubectl apply -f k8s/namespace.yaml
-        continue-on-error: true
-
-      - name: Deploy ConfigMap
-        run: kubectl apply -f k8s/configmap.yaml
-
       - name: Update deployment image tag
         run: |
           # Replace placeholder with actual image tag
           sed -i "s|IMAGE_TAG_PLACEHOLDER|${{ inputs.image_tag }}|g" k8s/deployment.yaml
           sed -i "s|\${DOCKERHUB_USERNAME}|${{ secrets.DOCKERHUB_USERNAME }}|g" k8s/deployment.yaml
+          echo "Updated deployment.yaml with image tag: ${{ inputs.image_tag }}"
 
-      - name: Deploy application
+      - name: Validate manifests (Dry Run)
         run: |
-          kubectl apply -f k8s/deployment.yaml
-          kubectl apply -f k8s/service.yaml
-
-      - name: Wait for rollout
-        run: |
-          echo "Waiting for deployment to complete..."
-          kubectl rollout status deployment/calculator -n ${{ env.NAMESPACE }} --timeout=300s
-
-      - name: Verify deployment
-        run: |
-          echo "Deployment Status:"
-          kubectl get deployment calculator -n ${{ env.NAMESPACE }}
+          echo "=============================================="
+          echo "  KUBERNETES DEPLOYMENT - DRY RUN MODE"
+          echo "=============================================="
           echo ""
-          echo "Pod Status:"
-          kubectl get pods -n ${{ env.NAMESPACE }} -l app=calculator
+          echo "Note: No real cluster configured. Using --dry-run=client"
           echo ""
-          echo "Service Status:"
-          kubectl get svc -n ${{ env.NAMESPACE }}
+          echo "Validating namespace..."
+          kubectl apply --dry-run=client -f k8s/namespace.yaml
+          echo ""
+          echo "Validating configmap..."
+          kubectl apply --dry-run=client -f k8s/configmap.yaml
+          echo ""
+          echo "Validating deployment..."
+          kubectl apply --dry-run=client -f k8s/deployment.yaml
+          echo ""
+          echo "Validating service..."
+          kubectl apply --dry-run=client -f k8s/service.yaml
+          echo ""
+          echo "=============================================="
+          echo "  ALL MANIFESTS VALIDATED SUCCESSFULLY!"
+          echo "=============================================="
+
+      - name: Show deployment manifest
+        run: |
+          echo "Final deployment.yaml:"
+          echo "======================"
+          cat k8s/deployment.yaml
 
   # ==========================================================================
-  # Post-Deployment Smoke Tests
-  # Purpose: Verify the deployment is functional
+  # Deployment Summary
+  # Purpose: Show deployment information
   # ==========================================================================
-  smoke-test:
-    name: "Smoke Tests"
+  summary:
+    name: "Deployment Summary"
     needs: deploy
     runs-on: ubuntu-latest
     steps:
-      - name: Setup kubectl
-        uses: azure/setup-kubectl@v3
-        with:
-          version: 'v1.29.0'
-
-      - name: Configure kubeconfig
-        run: |
-          mkdir -p $HOME/.kube
-          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > $HOME/.kube/config
-          chmod 600 $HOME/.kube/config
-
-      - name: Get service endpoint
-        id: endpoint
-        run: |
-          # For minikube or local clusters, you would use:
-          # minikube service calculator -n calculator --url
-
-          # For cloud clusters with LoadBalancer:
-          # EXTERNAL_IP=$(kubectl get svc calculator -n calculator -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
-
-          # For this demo, we'll port-forward
-          echo "Setting up port-forward for smoke tests..."
-          kubectl port-forward svc/calculator 8080:80 -n ${{ env.NAMESPACE }} &
-          sleep 10
-          echo "endpoint=http://localhost:8080" >> $GITHUB_OUTPUT
-
-      - name: Run smoke tests
-        run: |
-          echo "Running smoke tests against ${{ steps.endpoint.outputs.endpoint }}"
-
-          # Test health endpoint
-          echo "Testing /health endpoint..."
-          health_response=$(curl -sf ${{ steps.endpoint.outputs.endpoint }}/health || echo "FAILED")
-          echo "Health response: $health_response"
-
-          # Test calculate endpoint
-          echo "Testing /calculate endpoint..."
-          calc_response=$(curl -sf -X POST ${{ steps.endpoint.outputs.endpoint }}/calculate \
-            -H "Content-Type: application/json" \
-            -d '{"operand1": 100, "operand2": 25}' || echo "FAILED")
-          echo "Calculate response: $calc_response"
-
-          # Test actuator health
-          echo "Testing /actuator/health endpoint..."
-          actuator_response=$(curl -sf ${{ steps.endpoint.outputs.endpoint }}/actuator/health || echo "FAILED")
-          echo "Actuator response: $actuator_response"
-
-          echo ""
-          echo "=============================================="
-          echo "         SMOKE TESTS COMPLETED                "
-          echo "=============================================="
-
       - name: Create deployment summary
+        env:
+          DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/spring-calculator
         run: |
-          echo "## CD Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "## CD Pipeline Summary" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Deployment Details" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Environment | \`${{ inputs.environment }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| Image Tag | \`${{ inputs.image_tag }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | \`$DOCKER_IMAGE:${{ inputs.image_tag }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Namespace | \`${{ env.NAMESPACE }}\` |" >> $GITHUB_STEP_SUMMARY
-          echo "| DAST Enabled | \`${{ inputs.run_dast }}\` |" >> $GITHUB_STEP_SUMMARY
           echo "| Deployment Time | \`$(date -u +'%Y-%m-%d %H:%M:%S UTC')\` |" >> $GITHUB_STEP_SUMMARY
-
-  # ==========================================================================
-  # Rollback (Manual Trigger)
-  # Purpose: Quickly revert to previous deployment if issues are found
-  # ==========================================================================
-  rollback:
-    name: "Rollback (if needed)"
-    needs: smoke-test
-    runs-on: ubuntu-latest
-    if: failure()
-    steps:
-      - name: Setup kubectl
-        uses: azure/setup-kubectl@v3
-        with:
-          version: 'v1.29.0'
-
-      - name: Configure kubeconfig
-        run: |
-          mkdir -p $HOME/.kube
-          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > $HOME/.kube/config
-          chmod 600 $HOME/.kube/config
-
-      - name: Rollback deployment
-        run: |
-          echo "Smoke tests failed! Rolling back deployment..."
-          kubectl rollout undo deployment/calculator -n ${{ env.NAMESPACE }}
-          kubectl rollout status deployment/calculator -n ${{ env.NAMESPACE }} --timeout=120s
-          echo "Rollback completed!"
-
-      - name: Notify rollback
-        run: |
-          echo "## ROLLBACK EXECUTED" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Deployment was rolled back due to smoke test failures." >> $GITHUB_STEP_SUMMARY
+          echo "### Status" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Image validated" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Manifests validated (dry-run)" >> $GITHUB_STEP_SUMMARY
+          echo "- ✅ Ready for deployment to real cluster" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Please investigate and fix the issues before re-deploying." >> $GITHUB_STEP_SUMMARY
+          echo "### Next Steps" >> $GITHUB_STEP_SUMMARY
+          echo "To deploy to a real Kubernetes cluster:" >> $GITHUB_STEP_SUMMARY
+          echo "1. Add \`KUBE_CONFIG\` secret (base64 encoded kubeconfig)" >> $GITHUB_STEP_SUMMARY
+          echo "2. Update the deploy job to remove dry-run mode" >> $GITHUB_STEP_SUMMARY
+          echo "3. Re-run this workflow" >> $GITHUB_STEP_SUMMARY
