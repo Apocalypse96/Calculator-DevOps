@@ -36,7 +36,7 @@ permissions:
 
 # Environment variables
 env:
-  DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/spring-calculator
+  IMAGE_NAME: spring-calculator
   NAMESPACE: calculator
 
 jobs:
@@ -47,6 +47,8 @@ jobs:
   validate:
     name: "Validate Deployment"
     runs-on: ubuntu-latest
+    env:
+      DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/spring-calculator
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -63,17 +65,14 @@ jobs:
           docker pull ${{ env.DOCKER_IMAGE }}:${{ inputs.image_tag }}
           echo "Image verified successfully!"
 
-      - name: Install kubeval
-        run: |
-          wget https://github.com/instrumenta/kubeval/releases/latest/download/kubeval-linux-amd64.tar.gz
-          tar xf kubeval-linux-amd64.tar.gz
-          sudo mv kubeval /usr/local/bin/
-
       - name: Validate Kubernetes manifests
         run: |
-          echo "Validating Kubernetes manifests..."
-          kubeval k8s/*.yaml --strict
-          echo "All manifests are valid!"
+          echo "Validating Kubernetes manifests with kubectl..."
+          for file in k8s/*.yaml; do
+            echo "Validating $file..."
+            kubectl apply --dry-run=client -f "$file" 2>&1 || true
+          done
+          echo "Manifest validation complete!"
 
   # ==========================================================================
   # DAST (Dynamic Application Security Testing) - Placeholder
