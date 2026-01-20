@@ -1,0 +1,465 @@
+# =============================================================================
+# CI Pipeline - Production-Grade with 12 Security Stages
+# =============================================================================
+# This pipeline implements shift-left security with comprehensive quality gates.
+# All stages must pass before an image is pushed to DockerHub.
+# =============================================================================
+
+name: CI Pipeline
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+    inputs:
+      skip_security_scans:
+        description: 'Skip security scans (NOT recommended for production)'
+        required: false
+        default: 'false'
+        type: boolean
+
+# Permissions required for various actions
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+  packages: write
+
+# Environment variables used across jobs
+env:
+  JAVA_VERSION: '17'
+  JAVA_DISTRIBUTION: 'temurin'
+  DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/spring-calculator
+
+jobs:
+  # ==========================================================================
+  # Stage 1 & 2: Checkout and Setup Runtime
+  # Purpose: Retrieve source code and configure consistent Java environment
+  # ==========================================================================
+  setup:
+    name: "Stage 1-3: Checkout, Setup & Cache"
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      # Stage 1: Checkout repository
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Full history for better analysis
+
+      # Stage 2: Setup Java 17 runtime
+      - name: Setup Java ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: maven
+          cache-dependency-path: '**/pom.xml'
+
+      # Stage 3: Verify dependencies are cached
+      - name: Verify Maven cache
+        run: ./mvnw dependency:go-offline -B
+
+      - name: Generate version
+        id: version
+        run: echo "version=$(date +'%Y%m%d')-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+  # ==========================================================================
+  # Stage 4: Linting (Checkstyle)
+  # Purpose: Enforce code style standards to catch quality issues early
+  # Risk: Code quality issues can mask security vulnerabilities
+  # ==========================================================================
+  lint:
+    name: "Stage 4: Lint (Checkstyle)"
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: maven
+
+      - name: Run Checkstyle
+        run: ./mvnw checkstyle:check -Dcheckstyle.config.location=config/checkstyle/checkstyle.xml
+
+      - name: Upload Checkstyle Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: checkstyle-report
+          path: target/checkstyle-result.xml
+          retention-days: 7
+
+  # ==========================================================================
+  # Stage 5: SAST (CodeQL)
+  # Purpose: Static Application Security Testing for vulnerability detection
+  # Risk: SQL injection, XSS, path traversal, insecure deserialization
+  # ==========================================================================
+  sast:
+    name: "Stage 5: SAST (CodeQL)"
+    needs: setup
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: maven
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: java
+          queries: +security-extended,security-and-quality
+
+      - name: Build for CodeQL Analysis
+        run: ./mvnw compile -DskipTests -Dcheckstyle.skip=true
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:java"
+
+  # ==========================================================================
+  # Stage 6: SCA (Software Composition Analysis)
+  # Purpose: Scan dependencies for known CVEs
+  # Risk: Supply chain attacks via vulnerable dependencies
+  # Threshold: Fails on CVSS >= 7.0 (HIGH/CRITICAL)
+  # ==========================================================================
+  sca:
+    name: "Stage 6: SCA (OWASP Dependency-Check)"
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: maven
+
+      - name: Run OWASP Dependency Check
+        run: |
+          ./mvnw dependency-check:check \
+            -DfailBuildOnCVSS=7 \
+            -Dformat=ALL \
+            -DsuppressionFile=config/owasp/suppressions.xml
+        continue-on-error: false
+
+      - name: Upload Dependency Check Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dependency-check-report
+          path: target/dependency-check-report.*
+          retention-days: 30
+
+  # ==========================================================================
+  # Stage 7: Unit Tests
+  # Purpose: Validate business logic and security controls function correctly
+  # Risk: Broken functionality, security bypass, regression bugs
+  # ==========================================================================
+  test:
+    name: "Stage 7: Unit Tests"
+    needs: [lint, sast, sca]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: maven
+
+      - name: Run Unit Tests
+        run: ./mvnw test -Dcheckstyle.skip=true
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: target/surefire-reports/
+          retention-days: 7
+
+      - name: Publish Test Report
+        uses: dorny/test-reporter@v1
+        if: always()
+        with:
+          name: JUnit Test Results
+          path: target/surefire-reports/*.xml
+          reporter: java-junit
+
+  # ==========================================================================
+  # Stage 8: Build JAR
+  # Purpose: Create the deployable application artifact
+  # Risk: Cannot proceed to containerization without valid artifact
+  # ==========================================================================
+  build:
+    name: "Stage 8: Build JAR"
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: ${{ env.JAVA_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
+          cache: maven
+
+      - name: Build JAR
+        run: ./mvnw package -DskipTests -Dcheckstyle.skip=true
+
+      - name: Verify JAR exists
+        run: |
+          if [ ! -f target/calculator.jar ]; then
+            echo "ERROR: JAR file not created"
+            exit 1
+          fi
+          echo "JAR file size: $(du -h target/calculator.jar | cut -f1)"
+
+      - name: Upload JAR Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: application-jar
+          path: target/calculator.jar
+          retention-days: 5
+
+  # ==========================================================================
+  # Stage 9: Docker Image Build
+  # Purpose: Create container image using multi-stage build
+  # Risk: No image for security scanning or deployment
+  # ==========================================================================
+  docker-build:
+    name: "Stage 9: Docker Build"
+    needs: build
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_IMAGE }}
+          tags: |
+            type=sha,prefix=
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: ./Dockerfile
+          push: false
+          load: true
+          tags: ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Save Docker image
+        run: docker save ${{ env.DOCKER_IMAGE }}:${{ github.sha }} -o image.tar
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image
+          path: image.tar
+          retention-days: 1
+
+  # ==========================================================================
+  # Stage 10: Container Image Scan (Trivy)
+  # Purpose: Scan container image for OS and library vulnerabilities
+  # Risk: Vulnerable base image, runtime exploits
+  # Threshold: Fails on HIGH/CRITICAL vulnerabilities
+  # ==========================================================================
+  container-scan:
+    name: "Stage 10: Container Scan (Trivy)"
+    needs: docker-build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Load Docker image
+        run: docker load -i image.tar
+
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'CRITICAL,HIGH'
+          exit-code: '1'
+          ignore-unfixed: true
+
+      - name: Upload Trivy scan results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+      - name: Run Trivy for table output
+        uses: aquasecurity/trivy-action@master
+        if: always()
+        with:
+          image-ref: ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+          format: 'table'
+          severity: 'CRITICAL,HIGH,MEDIUM'
+
+  # ==========================================================================
+  # Stage 11: Runtime Container Test
+  # Purpose: Verify container actually runs and responds correctly
+  # Risk: Container crash on startup, misconfiguration
+  # ==========================================================================
+  container-test:
+    name: "Stage 11: Runtime Container Test"
+    needs: container-scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Load Docker image
+        run: docker load -i image.tar
+
+      - name: Start container
+        run: |
+          docker run -d --name test-container \
+            -p 8080:8080 \
+            -e SPRING_PROFILES_ACTIVE=default \
+            ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+
+      - name: Wait for container to be healthy
+        run: |
+          echo "Waiting for application to start..."
+          timeout 90 bash -c 'until curl -sf http://localhost:8080/actuator/health; do
+            echo "Waiting..."
+            sleep 3
+          done'
+          echo "Application is healthy!"
+
+      - name: Test /health endpoint
+        run: |
+          response=$(curl -sf http://localhost:8080/health)
+          echo "Health response: $response"
+          if [[ "$response" != *"UP"* ]]; then
+            echo "ERROR: Health check failed"
+            exit 1
+          fi
+          echo "Health check passed!"
+
+      - name: Test /calculate endpoint
+        run: |
+          response=$(curl -sf -X POST http://localhost:8080/calculate \
+            -H "Content-Type: application/json" \
+            -d '{"operand1": 10, "operand2": 5}')
+          echo "Calculate response: $response"
+          if [[ "$response" != *"15"* ]] || [[ "$response" != *"50"* ]]; then
+            echo "ERROR: Calculate endpoint test failed"
+            exit 1
+          fi
+          echo "Calculate endpoint test passed!"
+
+      - name: Test validation error handling
+        run: |
+          status_code=$(curl -sf -o /dev/null -w "%{http_code}" -X POST http://localhost:8080/calculate \
+            -H "Content-Type: application/json" \
+            -d '{}')
+          if [[ "$status_code" != "400" ]]; then
+            echo "ERROR: Validation should return 400, got $status_code"
+            exit 1
+          fi
+          echo "Validation test passed!"
+
+      - name: Container logs (for debugging)
+        if: always()
+        run: docker logs test-container
+
+      - name: Cleanup
+        if: always()
+        run: docker rm -f test-container || true
+
+  # ==========================================================================
+  # Stage 12: DockerHub Push (Trusted Image Only)
+  # Purpose: Publish fully validated image to container registry
+  # Condition: Only on main/master branch after all checks pass
+  # ==========================================================================
+  push:
+    name: "Stage 12: Push to DockerHub"
+    needs: container-test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main'
+    steps:
+      - name: Download Docker image
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-image
+
+      - name: Load Docker image
+        run: docker load -i image.tar
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push to DockerHub
+        run: |
+          # Push with SHA tag
+          docker push ${{ env.DOCKER_IMAGE }}:${{ github.sha }}
+
+          # Tag and push as latest
+          docker tag ${{ env.DOCKER_IMAGE }}:${{ github.sha }} ${{ env.DOCKER_IMAGE }}:latest
+          docker push ${{ env.DOCKER_IMAGE }}:latest
+
+          echo "Successfully pushed:"
+          echo "  - ${{ env.DOCKER_IMAGE }}:${{ github.sha }}"
+          echo "  - ${{ env.DOCKER_IMAGE }}:latest"
+
+      - name: Create deployment summary
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | \`${{ env.DOCKER_IMAGE }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| SHA Tag | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Branch | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Commit | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY

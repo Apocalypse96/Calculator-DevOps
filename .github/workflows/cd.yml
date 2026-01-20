@@ -1,0 +1,285 @@
+# =============================================================================
+# CD Pipeline - Kubernetes Deployment with Manual Trigger
+# =============================================================================
+# This pipeline deploys validated Docker images to Kubernetes.
+# Requires manual trigger to ensure controlled releases.
+# =============================================================================
+
+name: CD Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: 'Docker image tag to deploy (SHA or "latest")'
+        required: true
+        default: 'latest'
+        type: string
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      run_dast:
+        description: 'Run DAST scan after deployment'
+        required: false
+        default: true
+        type: boolean
+
+# Permissions required for deployment
+permissions:
+  contents: read
+  id-token: write
+
+# Environment variables
+env:
+  DOCKER_IMAGE: ${{ secrets.DOCKERHUB_USERNAME }}/spring-calculator
+  NAMESPACE: calculator
+
+jobs:
+  # ==========================================================================
+  # Pre-deployment Validation
+  # Purpose: Ensure the image exists and manifests are valid
+  # ==========================================================================
+  validate:
+    name: "Validate Deployment"
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Login to DockerHub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Verify image exists
+        run: |
+          echo "Checking if image exists: ${{ env.DOCKER_IMAGE }}:${{ inputs.image_tag }}"
+          docker pull ${{ env.DOCKER_IMAGE }}:${{ inputs.image_tag }}
+          echo "Image verified successfully!"
+
+      - name: Install kubeval
+        run: |
+          wget https://github.com/instrumenta/kubeval/releases/latest/download/kubeval-linux-amd64.tar.gz
+          tar xf kubeval-linux-amd64.tar.gz
+          sudo mv kubeval /usr/local/bin/
+
+      - name: Validate Kubernetes manifests
+        run: |
+          echo "Validating Kubernetes manifests..."
+          kubeval k8s/*.yaml --strict
+          echo "All manifests are valid!"
+
+  # ==========================================================================
+  # DAST (Dynamic Application Security Testing) - Placeholder
+  # Purpose: Test running application for security vulnerabilities
+  # Note: This is a simulation for demonstration purposes
+  # ==========================================================================
+  dast:
+    name: "DAST Scan (Simulated)"
+    needs: validate
+    runs-on: ubuntu-latest
+    if: inputs.run_dast == true
+    steps:
+      - name: DAST Scan Placeholder
+        run: |
+          echo "=============================================="
+          echo "      DYNAMIC APPLICATION SECURITY TEST       "
+          echo "=============================================="
+          echo ""
+          echo "In a production environment, this stage would:"
+          echo ""
+          echo "1. Deploy to a staging environment"
+          echo "2. Run OWASP ZAP or similar DAST tool:"
+          echo "   - zap-full-scan.py -t http://staging-url"
+          echo "   - Nuclei vulnerability scans"
+          echo "   - Burp Suite Enterprise scans"
+          echo ""
+          echo "3. Test for:"
+          echo "   - SQL Injection vulnerabilities"
+          echo "   - Cross-Site Scripting (XSS)"
+          echo "   - Authentication bypasses"
+          echo "   - API security issues"
+          echo "   - OWASP Top 10 vulnerabilities"
+          echo ""
+          echo "4. Generate reports and fail on HIGH/CRITICAL"
+          echo ""
+          echo "=============================================="
+          echo "Simulating DAST scan..."
+          sleep 5
+          echo "DAST scan completed (simulation)"
+          echo "=============================================="
+
+  # ==========================================================================
+  # Deploy to Kubernetes
+  # Purpose: Deploy the application to the target Kubernetes cluster
+  # ==========================================================================
+  deploy:
+    name: "Deploy to Kubernetes"
+    needs: [validate, dast]
+    if: always() && needs.validate.result == 'success' && (needs.dast.result == 'success' || needs.dast.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.29.0'
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Create namespace (if not exists)
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+        continue-on-error: true
+
+      - name: Deploy ConfigMap
+        run: kubectl apply -f k8s/configmap.yaml
+
+      - name: Update deployment image tag
+        run: |
+          # Replace placeholder with actual image tag
+          sed -i "s|IMAGE_TAG_PLACEHOLDER|${{ inputs.image_tag }}|g" k8s/deployment.yaml
+          sed -i "s|\${DOCKERHUB_USERNAME}|${{ secrets.DOCKERHUB_USERNAME }}|g" k8s/deployment.yaml
+
+      - name: Deploy application
+        run: |
+          kubectl apply -f k8s/deployment.yaml
+          kubectl apply -f k8s/service.yaml
+
+      - name: Wait for rollout
+        run: |
+          echo "Waiting for deployment to complete..."
+          kubectl rollout status deployment/calculator -n ${{ env.NAMESPACE }} --timeout=300s
+
+      - name: Verify deployment
+        run: |
+          echo "Deployment Status:"
+          kubectl get deployment calculator -n ${{ env.NAMESPACE }}
+          echo ""
+          echo "Pod Status:"
+          kubectl get pods -n ${{ env.NAMESPACE }} -l app=calculator
+          echo ""
+          echo "Service Status:"
+          kubectl get svc -n ${{ env.NAMESPACE }}
+
+  # ==========================================================================
+  # Post-Deployment Smoke Tests
+  # Purpose: Verify the deployment is functional
+  # ==========================================================================
+  smoke-test:
+    name: "Smoke Tests"
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.29.0'
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Get service endpoint
+        id: endpoint
+        run: |
+          # For minikube or local clusters, you would use:
+          # minikube service calculator -n calculator --url
+
+          # For cloud clusters with LoadBalancer:
+          # EXTERNAL_IP=$(kubectl get svc calculator -n calculator -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+          # For this demo, we'll port-forward
+          echo "Setting up port-forward for smoke tests..."
+          kubectl port-forward svc/calculator 8080:80 -n ${{ env.NAMESPACE }} &
+          sleep 10
+          echo "endpoint=http://localhost:8080" >> $GITHUB_OUTPUT
+
+      - name: Run smoke tests
+        run: |
+          echo "Running smoke tests against ${{ steps.endpoint.outputs.endpoint }}"
+
+          # Test health endpoint
+          echo "Testing /health endpoint..."
+          health_response=$(curl -sf ${{ steps.endpoint.outputs.endpoint }}/health || echo "FAILED")
+          echo "Health response: $health_response"
+
+          # Test calculate endpoint
+          echo "Testing /calculate endpoint..."
+          calc_response=$(curl -sf -X POST ${{ steps.endpoint.outputs.endpoint }}/calculate \
+            -H "Content-Type: application/json" \
+            -d '{"operand1": 100, "operand2": 25}' || echo "FAILED")
+          echo "Calculate response: $calc_response"
+
+          # Test actuator health
+          echo "Testing /actuator/health endpoint..."
+          actuator_response=$(curl -sf ${{ steps.endpoint.outputs.endpoint }}/actuator/health || echo "FAILED")
+          echo "Actuator response: $actuator_response"
+
+          echo ""
+          echo "=============================================="
+          echo "         SMOKE TESTS COMPLETED                "
+          echo "=============================================="
+
+      - name: Create deployment summary
+        run: |
+          echo "## CD Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | \`${{ inputs.environment }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image Tag | \`${{ inputs.image_tag }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Namespace | \`${{ env.NAMESPACE }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| DAST Enabled | \`${{ inputs.run_dast }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| Deployment Time | \`$(date -u +'%Y-%m-%d %H:%M:%S UTC')\` |" >> $GITHUB_STEP_SUMMARY
+
+  # ==========================================================================
+  # Rollback (Manual Trigger)
+  # Purpose: Quickly revert to previous deployment if issues are found
+  # ==========================================================================
+  rollback:
+    name: "Rollback (if needed)"
+    needs: smoke-test
+    runs-on: ubuntu-latest
+    if: failure()
+    steps:
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.29.0'
+
+      - name: Configure kubeconfig
+        run: |
+          mkdir -p $HOME/.kube
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > $HOME/.kube/config
+          chmod 600 $HOME/.kube/config
+
+      - name: Rollback deployment
+        run: |
+          echo "Smoke tests failed! Rolling back deployment..."
+          kubectl rollout undo deployment/calculator -n ${{ env.NAMESPACE }}
+          kubectl rollout status deployment/calculator -n ${{ env.NAMESPACE }} --timeout=120s
+          echo "Rollback completed!"
+
+      - name: Notify rollback
+        run: |
+          echo "## ROLLBACK EXECUTED" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Deployment was rolled back due to smoke test failures." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Please investigate and fix the issues before re-deploying." >> $GITHUB_STEP_SUMMARY

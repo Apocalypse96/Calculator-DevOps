@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    OWASP Dependency-Check Suppressions File
+
+    This file contains known false positives and acknowledged vulnerabilities.
+    Each suppression should include:
+    - A clear reason for the suppression
+    - The CVE or vulnerability identifier
+    - A review date or expiration
+
+    IMPORTANT: Regularly review this file and remove suppressions that are no longer needed.
+-->
+<suppressions xmlns="https://jeremylong.github.io/DependencyCheck/dependency-suppression.1.3.xsd">
+
+    <!--
+        Example suppression template (uncomment and modify as needed):
+
+        <suppress>
+            <notes>
+                Reason: False positive - this vulnerability does not apply to our usage
+                Reviewed: 2024-01-01
+                Reviewer: DevSecOps Team
+            </notes>
+            <packageUrl regex="true">^pkg:maven/org\.example/example-lib@.*$</packageUrl>
+            <cve>CVE-2024-XXXXX</cve>
+        </suppress>
+    -->
+
+    <!--
+        Spring Boot Framework Suppressions
+        These are commonly flagged but typically not exploitable in standard configurations.
+        Review quarterly and update as needed.
+    -->
+
+    <!--
+        <suppress>
+            <notes>
+                Reason: Spring Boot embedded Tomcat - not applicable to our deployment
+                Reviewed: 2024-01-01
+            </notes>
+            <packageUrl regex="true">^pkg:maven/org\.apache\.tomcat\.embed/.*$</packageUrl>
+            <vulnerabilityName regex="true">CVE-.*</vulnerabilityName>
+        </suppress>
+    -->
+
+    <!--
+        Test Dependencies
+        Vulnerabilities in test-scoped dependencies are lower risk but should still be reviewed.
+    -->
+
+    <!--
+        <suppress>
+            <notes>
+                Reason: Test dependency only - not included in production build
+                Reviewed: 2024-01-01
+            </notes>
+            <packageUrl regex="true">^pkg:maven/org\.mockito/.*$</packageUrl>
+            <cve>CVE-2024-XXXXX</cve>
+        </suppress>
+    -->
+
+    <!--
+        IMPORTANT NOTES:
+
+        1. Do NOT suppress vulnerabilities without proper justification
+        2. Always include:
+           - Reason for suppression
+           - Review date
+           - Reviewer name/team
+        3. Set calendar reminders to review suppressions quarterly
+        4. Remove suppressions when libraries are updated
+        5. Never suppress HIGH/CRITICAL vulnerabilities without
+           compensating controls documented
+    -->
+
+</suppressions>

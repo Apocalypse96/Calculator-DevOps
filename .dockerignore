@@ -1,0 +1,58 @@
+# =============================================================================
+# Docker Ignore File
+# Excludes unnecessary files from Docker build context
+# =============================================================================
+
+# Build artifacts (we rebuild inside Docker)
+target/
+!target/calculator.jar
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+*.swp
+*.swo
+.project
+.classpath
+.settings/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# CI/CD configurations
+.github/
+
+# Kubernetes manifests
+k8s/
+
+# Documentation
+*.md
+docs/
+LICENSE
+
+# Local configuration
+*.local
+.env
+.env.*
+
+# Maven wrapper (copied explicitly)
+# !.mvn/
+# !mvnw
+
+# Test files (not needed in production image)
+src/test/
+
+# Logs
+logs/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Config files not needed in image
+config/checkstyle/
+config/owasp/

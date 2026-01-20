@@ -1,0 +1,13 @@
+# =============================================================================
+# Kubernetes Namespace
+# Purpose: Isolate calculator application resources
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: calculator
+  labels:
+    name: calculator
+    app: calculator
+    environment: production
+    managed-by: github-actions
